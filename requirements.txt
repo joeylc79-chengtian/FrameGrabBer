@@ -1,0 +1,3 @@
+pyinstaller>=6.0
+imageio-ffmpeg
+tkinterdnd2
