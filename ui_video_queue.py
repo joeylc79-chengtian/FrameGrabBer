@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 
 from theme import FONT_FAMILY, Theme
 from ui_models import VideoItem
+from ui_theme_apply import bind_danger_icon_theme
 from ui_widgets import ScrollableFrame, button, muted_label, panel, section_title
 
 
@@ -23,6 +24,7 @@ class VideoQueueView(tk.Frame):
         self._on_clear = on_clear
         self._on_remove = on_remove
         self._items: Sequence[VideoItem] = ()
+        self._thumbnail_images: list[tk.PhotoImage] = []
 
         self._container = panel(self, theme)
         self._container.pack(fill="both", expand=True)
@@ -71,8 +73,9 @@ class VideoQueueView(tk.Frame):
             widget.bind("<Enter>", lambda _event: self._set_drop_hover(True))
             widget.bind("<Leave>", lambda _event: self._set_drop_hover(False))
 
-    def render(self, items: Sequence[VideoItem], selected_index: int) -> None:
+    def render(self, items: Sequence[VideoItem]) -> None:
         self._items = items
+        self._thumbnail_images.clear()
         self._title.configure(text=f"视频队列（{len(items)}）")
         for child in self._list.content.winfo_children():
             child.destroy()
@@ -87,7 +90,11 @@ class VideoQueueView(tk.Frame):
         self.configure(bg=theme.bg)
         self._container.configure(bg=theme.panel, highlightbackground=theme.border)
         self._drop.configure(bg=theme.panel_alt, highlightbackground=theme.border)
-        self.render(self._items, 0)
+        self._list._theme = theme
+        self._list.configure(bg=theme.panel)
+        self._list.canvas.configure(bg=theme.panel)
+        self._list.content.configure(bg=theme.panel)
+        self._list.scrollbar.configure(bg=theme.panel)
 
     def _build_item_card(self, index: int, item: VideoItem) -> None:
         card_bg = self._theme.panel
@@ -101,6 +108,8 @@ class VideoQueueView(tk.Frame):
 
         top = tk.Frame(card, bg=card_bg)
         top.pack(fill="x", padx=12, pady=(10, 4))
+        thumbnail = self._thumbnail_widget(top, item, card_bg)
+        thumbnail.pack(side="left", padx=(0, 10))
         number = tk.Label(
             top,
             text=str(index + 1),
@@ -128,10 +137,9 @@ class VideoQueueView(tk.Frame):
             padx=7,
             pady=1,
         )
+        bind_danger_icon_theme(close, self._theme, card_bg)
         close.pack(side="right")
         close.bind("<Button-1>", lambda event, remove_index=index: self._remove_clicked(event, remove_index))
-        close.bind("<Enter>", lambda _event, widget=close: widget.configure(bg=self._theme.error, fg=self._theme.button_text))
-        close.bind("<Leave>", lambda _event, widget=close, bg=card_bg: widget.configure(bg=bg, fg=self._theme.text_muted))
 
         meta = tk.Frame(card, bg=card_bg)
         meta.pack(fill="x", padx=12, pady=(4, 12))
@@ -151,6 +159,26 @@ class VideoQueueView(tk.Frame):
     def _remove_clicked(self, event: tk.Event, index: int) -> None:
         self._on_remove(index)
         return "break"
+
+    def _thumbnail_widget(self, master: tk.Misc, item: VideoItem, bg: str) -> tk.Label:
+        if item.thumbnail_path:
+            try:
+                image = tk.PhotoImage(file=item.thumbnail_path)
+            except tk.TclError:
+                image = None
+            if image:
+                self._thumbnail_images.append(image)
+                return tk.Label(master, image=image, bg=bg, width=96, height=54)
+        text = "封面生成中" if item.thumbnail_status == "pending" else "无封面"
+        return tk.Label(
+            master,
+            text=text,
+            font=(FONT_FAMILY, 8),
+            bg=self._theme.panel_alt,
+            fg=self._theme.text_subtle,
+            width=12,
+            height=3,
+        )
 
     def _meta_pairs(self, item: VideoItem) -> tuple[tuple[str, str], ...]:
         info = item.info

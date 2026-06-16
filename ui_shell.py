@@ -21,7 +21,7 @@ class AppHeader(tk.Frame):
         ).pack(side="left", padx=(0, 10))
         tk.Label(
             self,
-            text="视频逐帧抽图工具 V0.8",
+            text="视频逐帧抽图工具 V0.9",
             font=(FONT_FAMILY, 14, "bold"),
             bg=theme.bg,
             fg=theme.text,
@@ -87,3 +87,6 @@ class ExportActionBar(tk.Frame):
 
     def set_estimate(self, text: str) -> None:
         self.estimate_label.configure(text=text)
+
+    def set_running(self, running: bool) -> None:
+        self.start_button.configure(text="停止导出" if running else "开始导出")

@@ -4,13 +4,16 @@ import queue
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from app_bootstrap import DND_FILES, BaseTk, get_ffmpeg_exe, resolve_icon_path
+from app_bootstrap import DND_FILES, BaseTk, apply_window_icon, enable_drag_and_drop, pause_redraw, resume_redraw
+from background_media import start_thumbnail_jobs
+from ui_app_workers import AppWorkerMixin
 from theme import Theme, ThemeMode, configure_ttk_styles, resolve_theme
 from ui_export_actions import ExportActions
 from ui_export_controller import build_estimate_text
 from ui_export_settings import ExportSettingsView
 from ui_models import ExportSettingsState, VideoItem
 from ui_shell import AppFooter, AppHeader, ExportActionBar
+from ui_theme_apply import apply_theme_tree
 from ui_video_queue import VideoQueueView
 from video_queue_controller import add_video_paths, extract_video_paths, sync_item_from_text
 
@@ -18,27 +21,22 @@ from video_queue_controller import add_video_paths, extract_video_paths, sync_it
 MAX_VIDEO_COUNT = 20
 
 
-class App(BaseTk):
+class App(AppWorkerMixin, BaseTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("视频逐帧抽图工具 V0.8")
+        self.withdraw()
+        self.title("视频逐帧抽图工具 V0.9")
         self.geometry("1180x720")
         self.minsize(980, 640)
         self.resizable(True, True)
 
-        icon_path = resolve_icon_path()
-        if icon_path:
-            try:
-                self.iconbitmap(icon_path)
-            except tk.TclError:
-                pass
-
+        apply_window_icon(self)
         self._theme_mode = tk.StringVar(self, value=ThemeMode.SYSTEM.value)
         self._theme = resolve_theme(ThemeMode.SYSTEM)
         self._settings = ExportSettingsState(self)
-        self._ffmpeg_exe = get_ffmpeg_exe()
+        self._ffmpeg_exe: str | None = None
+        self._ffmpeg_ready = False
         self._items: list[VideoItem] = []
-        self._selected_index = 0
         self._queue: queue.Queue[tuple] = queue.Queue()
         self._export_actions = ExportActions(self._ffmpeg_exe, self._items, self._settings, self._queue)
         self._main_frame: tk.Frame | None = None
@@ -52,12 +50,19 @@ class App(BaseTk):
         self._status_label: tk.Label | None = None
         self._poll_after_id: str | None = None
         self._settings_after_id: str | None = None
+        self._drop_after_id: str | None = None
+        self._ffmpeg_after_id: str | None = None
 
         self._build_shell()
-        self._register_drop()
         self._poll_queue()
-        if not self._ffmpeg_exe:
-            self._set_status("未找到 FFmpeg，请确认 imageio-ffmpeg 已安装", self._theme.error)
+        self._drop_after_id = self.after(150, self._register_drop)
+        self._ffmpeg_after_id = self.after(220, self._start_ffmpeg_probe)
+        self.bind_all("<Button-1>", self._clear_entry_focus, add="+")
+        self.after_idle(self._show_ready_window)
+
+    def _show_ready_window(self) -> None:
+        self.update_idletasks()
+        self.deiconify()
 
     def _build_shell(self) -> None:
         self.configure(bg=self._theme.bg)
@@ -85,6 +90,7 @@ class App(BaseTk):
             self._theme,
             self._settings,
             self._on_settings_change,
+            self._on_settings_structure_change,
             self._on_target_fps_toggle,
             self._on_time_range_toggle,
         )
@@ -97,10 +103,19 @@ class App(BaseTk):
         self._render()
 
     def _register_drop(self) -> None:
-        if not getattr(self, "dnd_available", False):
+        self._drop_after_id = None
+        if not enable_drag_and_drop(self):
             return
         self.drop_target_register(DND_FILES)
         self.dnd_bind("<<Drop>>", self._on_drop)
+
+    def _clear_entry_focus(self, event: tk.Event) -> None:
+        widget = getattr(event, "widget", None)
+        if isinstance(widget, tk.Entry):
+            return
+        focused = self.focus_get()
+        if isinstance(focused, tk.Entry):
+            self.focus_set()
 
     def _select_videos(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -122,6 +137,9 @@ class App(BaseTk):
         messagebox.showinfo("提示", "请拖入视频文件（MP4 / MOV / MKV / AVI 等）")
 
     def _add_video_paths(self, paths: list[str]) -> None:
+        if not self._ffmpeg_ready:
+            messagebox.showinfo("提示", "FFmpeg 还在准备中，请稍等一下再导入视频")
+            return
         if not self._ffmpeg_exe:
             messagebox.showerror("错误", "找不到 FFmpeg，无法读取视频信息")
             return
@@ -136,11 +154,12 @@ class App(BaseTk):
             self._schedule_settings_refresh,
         )
         if self._items:
-            self._selected_index = min(self._selected_index, len(self._items) - 1)
+            self._refresh_queue()
         if result.reached_limit:
             messagebox.showinfo("提示", f"最多一次导入 {MAX_VIDEO_COUNT} 个视频")
         if result.added:
             self._set_status(f"已添加 {result.added} 个视频", self._theme.success)
+            start_thumbnail_jobs(self._ffmpeg_exe, self._items, self._queue)
         elif result.skipped:
             self._set_status("没有添加新视频，可能是重复文件或无法读取", self._theme.error)
         self._render()
@@ -153,7 +172,6 @@ class App(BaseTk):
         if index < 0 or index >= len(self._items):
             return
         removed = self._items.pop(index)
-        self._selected_index = min(max(0, self._selected_index), max(0, len(self._items) - 1))
         self._set_status(f"已移除 {removed.info.name}", self._theme.text_muted)
         self._render()
 
@@ -161,14 +179,18 @@ class App(BaseTk):
         if not self._items:
             return
         self._items.clear()
-        self._selected_index = 0
         self._set_status("已清空视频列表", self._theme.text_muted)
         self._render()
 
     def _on_settings_change(self) -> None:
+        self._schedule_estimate_refresh()
+
+    def _on_settings_structure_change(self) -> None:
         if self._settings.interval.get() != "每帧" and self._settings.use_target_fps.get():
             self._settings.use_target_fps.set(False)
             self._settings.use_per_video_fps.set(False)
+        if self._settings_view:
+            self._settings_view.reset_dynamic_sections()
         self._refresh_settings()
 
     def _on_target_fps_toggle(self) -> None:
@@ -178,12 +200,18 @@ class App(BaseTk):
             messagebox.showinfo("提示", "请先选择“逐帧”模式，指定帧率导出只适用于逐帧导出。")
         if not self._settings.use_target_fps.get():
             self._settings.use_per_video_fps.set(False)
+            if not self._settings.target_fps.get().strip():
+                self._settings.target_fps.set("24")
+        if self._settings_view:
+            self._settings_view.reset_dynamic_sections()
         self._refresh_settings()
 
     def _on_time_range_toggle(self) -> None:
         enabled = bool(self._settings.use_time_range.get())
         for item in self._items:
             item.use_range.set(enabled)
+        if self._settings_view:
+            self._settings_view.reset_dynamic_sections()
         self._refresh_settings()
 
     def _change_theme(self) -> None:
@@ -191,8 +219,25 @@ class App(BaseTk):
             mode = ThemeMode(self._theme_mode.get())
         except ValueError:
             mode = ThemeMode.SYSTEM
+        old_theme = self._theme
         self._theme = resolve_theme(mode)
-        self._build_shell()
+        self._apply_theme(old_theme)
+
+    def _apply_theme(self, old_theme: Theme) -> None:
+        pause_redraw(self)
+        try:
+            self.configure(bg=self._theme.bg)
+            apply_theme_tree(self, old_theme, self._theme)
+            if self._header:
+                self._header.theme_control.refresh(self._theme)
+            if self._video_queue_view:
+                self._video_queue_view.refresh_theme(self._theme)
+            if self._settings_view:
+                self._settings_view._theme = self._theme
+                self._settings_view.refresh_theme(self._theme)
+            self._refresh_estimate()
+        finally:
+            resume_redraw(self)
 
     def _render(self) -> None:
         self._refresh_queue()
@@ -202,15 +247,28 @@ class App(BaseTk):
 
     def _refresh_queue(self) -> None:
         if self._video_queue_view:
-            self._video_queue_view.render(self._items, self._selected_index)
+            self._video_queue_view.render(self._items)
 
     def _refresh_settings(self) -> None:
         self._settings_after_id = None
         estimate = build_estimate_text(self._items, self._settings)
         if self._settings_view:
-            self._settings_view.render(self._items, self._selected_index)
+            self._settings_view.render(self._items)
         if self._action_bar:
             self._action_bar.set_estimate(estimate)
+
+    def _schedule_estimate_refresh(self) -> None:
+        if self._settings_after_id:
+            try:
+                self.after_cancel(self._settings_after_id)
+            except tk.TclError:
+                pass
+        self._settings_after_id = self.after(120, self._refresh_estimate)
+
+    def _refresh_estimate(self) -> None:
+        self._settings_after_id = None
+        if self._action_bar:
+            self._action_bar.set_estimate(build_estimate_text(self._items, self._settings))
 
     def _schedule_settings_refresh(self) -> None:
         if self._settings_after_id:
@@ -219,44 +277,3 @@ class App(BaseTk):
             except tk.TclError:
                 pass
         self._settings_after_id = self.after(80, self._refresh_settings)
-
-    def _start_export(self) -> None:
-        self._export_actions.start(self._progress, self._progress_label, self._set_status, self._theme)
-
-    def _poll_queue(self) -> None:
-        try:
-            while True:
-                msg = self._queue.get_nowait()
-                self._handle_worker_message(msg)
-        except queue.Empty:
-            pass
-        self._poll_after_id = self.after(200, self._poll_queue)
-
-    def _handle_worker_message(self, msg: tuple) -> None:
-        self._export_actions.handle_message(
-            msg,
-            self._progress,
-            self._progress_label,
-            self._set_status,
-            self._theme,
-        )
-
-    def _set_status(self, text: str, color: str | None = None) -> None:
-        if not self._status_label:
-            return
-        self._status_label.configure(text=text, fg=color or self._theme.text_subtle)
-
-    def destroy(self) -> None:
-        if self._poll_after_id:
-            try:
-                self.after_cancel(self._poll_after_id)
-            except tk.TclError:
-                pass
-            self._poll_after_id = None
-        if self._settings_after_id:
-            try:
-                self.after_cancel(self._settings_after_id)
-            except tk.TclError:
-                pass
-            self._settings_after_id = None
-        super().destroy()

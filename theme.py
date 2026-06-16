@@ -22,6 +22,9 @@ class Theme:
     input_bg: str
     border: str
     border_active: str
+    button_bg: str
+    button_hover: str
+    button_pressed: str
     text: str
     text_muted: str
     text_subtle: str
@@ -42,6 +45,9 @@ DARK_THEME = Theme(
     input_bg="#1d2530",
     border="#2c3642",
     border_active="#3a8dff",
+    button_bg="#1d2530",
+    button_hover="#263141",
+    button_pressed="#303b4c",
     text="#e8edf4",
     text_muted="#a8b2c0",
     text_subtle="#7e8998",
@@ -62,6 +68,9 @@ LIGHT_THEME = Theme(
     input_bg="#ffffff",
     border="#d9e0ea",
     border_active="#246bfe",
+    button_bg="#ffffff",
+    button_hover="#eef2f7",
+    button_pressed="#e2e8f0",
     text="#18202b",
     text_muted="#526071",
     text_subtle="#8993a1",

@@ -5,42 +5,86 @@ from collections.abc import Callable, Sequence
 
 from theme import FONT_FAMILY, Theme
 from ui_models import ExportSettingsState, VideoItem
-from ui_widgets import TimeSlider, input_entry, muted_label
+from ui_widgets import TimeSlider, entry_last_valid, input_entry, muted_label, remember_entry_value
 
 
 class PerVideoFpsControls(tk.Frame):
-    def __init__(self, master: tk.Misc, theme: Theme) -> None:
+    def __init__(self, master: tk.Misc, theme: Theme, on_commit: Callable[[], None]) -> None:
         super().__init__(master, bg=theme.panel)
         self._theme = theme
+        self._on_commit = on_commit
+        self._mode: str | None = None
+        self._item_keys: tuple[str, ...] = ()
 
     def render(self, items: Sequence[VideoItem], enabled: bool) -> None:
+        mode = self._mode_for(items, enabled)
+        item_keys = tuple(item.info.path for item in items) if mode == "enabled" else ()
+        if mode == self._mode and item_keys == self._item_keys:
+            return
+        self._mode = mode
+        self._item_keys = item_keys
         for child in self.winfo_children():
             child.destroy()
-        if not items:
+        if mode == "empty":
             muted_label(self, self._theme, "导入多个视频后可分别设置帧率", 8).pack(anchor="w")
             return
-        if not enabled:
+        if mode == "disabled":
             muted_label(self, self._theme, "关闭时，所有视频使用上方统一帧率", 8).pack(anchor="w")
             return
         for index, item in enumerate(items):
-            row = tk.Frame(self, bg=self._theme.panel_alt, highlightthickness=1, highlightbackground=self._theme.border)
-            row.pack(fill="x", pady=(8, 0))
-            tk.Label(
-                row,
-                text=f"{index + 1}. {item.info.name}",
-                font=(FONT_FAMILY, 9, "bold"),
-                bg=self._theme.panel_alt,
-                fg=self._theme.text,
-                anchor="w",
-            ).pack(side="left", fill="x", expand=True, padx=(12, 8), pady=10)
-            tk.Label(
-                row,
-                text=f"最高 {item.info.fps:.2f}",
-                font=(FONT_FAMILY, 8),
-                bg=self._theme.panel_alt,
-                fg=self._theme.text_subtle,
-            ).pack(side="left", padx=(0, 8))
-            input_entry(row, self._theme, item.target_fps, 7).pack(side="right", padx=(0, 12), pady=8)
+            self._build_row(index, item)
+
+    def reset(self) -> None:
+        self._mode = None
+        self._item_keys = ()
+
+    def refresh_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.configure(bg=theme.panel)
+        for child in self.winfo_children():
+            child.configure(bg=theme.panel_alt if child.winfo_class() == "Frame" else theme.panel)
+
+    def _build_row(self, index: int, item: VideoItem) -> None:
+        row = tk.Frame(self, bg=self._theme.panel_alt, highlightthickness=1, highlightbackground=self._theme.border)
+        row.pack(fill="x", pady=(8, 0))
+        tk.Label(
+            row,
+            text=f"{index + 1}. {item.info.name}",
+            font=(FONT_FAMILY, 9, "bold"),
+            bg=self._theme.panel_alt,
+            fg=self._theme.text,
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True, padx=(12, 8), pady=10)
+        tk.Label(
+            row,
+            text=f"最高 {item.info.fps:.2f}",
+            font=(FONT_FAMILY, 8),
+            bg=self._theme.panel_alt,
+            fg=self._theme.text_subtle,
+        ).pack(side="left", padx=(0, 8))
+        entry = input_entry(
+            row,
+            self._theme,
+            item.target_fps,
+            7,
+            lambda target, current=item: self._commit_fps(current, target),
+        )
+        entry.pack(side="right", padx=(0, 12), pady=8)
+
+    def _commit_fps(self, item: VideoItem, entry: tk.Entry) -> str:
+        fallback = entry_last_valid(entry, "24")
+        item.target_fps.set(clamp_fps_text(item.target_fps.get(), item.info.fps, fallback))
+        remember_entry_value(entry)
+        self._on_commit()
+        return "break"
+
+    @staticmethod
+    def _mode_for(items: Sequence[VideoItem], enabled: bool) -> str:
+        if not items:
+            return "empty"
+        if not enabled:
+            return "disabled"
+        return "enabled"
 
 
 class RangeControls(tk.Frame):
@@ -55,18 +99,43 @@ class RangeControls(tk.Frame):
         self._theme = theme
         self._settings = settings
         self._on_change = on_change
+        self._mode: str | None = None
+        self._item_keys: tuple[str, ...] = ()
 
     def render(self, items: Sequence[VideoItem]) -> None:
+        mode = self._mode_for(items)
+        item_keys = tuple(item.info.path for item in items) if mode == "enabled" else ()
+        if mode == self._mode and item_keys == self._item_keys:
+            return
+        self._mode = mode
+        self._item_keys = item_keys
         for child in self.winfo_children():
             child.destroy()
-        if not items:
+        if mode == "empty":
             muted_label(self, self._theme, "导入视频后可设置片段范围", 8).pack(anchor="w")
             return
-        if not self._settings.use_time_range.get():
+        if mode == "disabled":
             muted_label(self, self._theme, "开启后，每个视频会显示自己的开始与结束范围", 8).pack(anchor="w")
             return
         for index, item in enumerate(items):
             self._build_video_row(index, item)
+
+    def reset(self) -> None:
+        self._mode = None
+        self._item_keys = ()
+
+    def refresh_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.configure(bg=theme.panel)
+        for child in self.winfo_children():
+            child.configure(bg=theme.panel_alt if child.winfo_class() == "Frame" else theme.panel)
+
+    def _mode_for(self, items: Sequence[VideoItem]) -> str:
+        if not items:
+            return "empty"
+        if not self._settings.use_time_range.get():
+            return "disabled"
+        return "enabled"
 
     def _build_video_row(self, index: int, item: VideoItem) -> None:
         card = tk.Frame(self, bg=self._theme.panel_alt, highlightthickness=1, highlightbackground=self._theme.border)
@@ -120,7 +189,10 @@ class RangeControls(tk.Frame):
             bg=self._theme.panel_alt,
         )
         slider.pack(side="left", fill="x", expand=True)
-        input_entry(row, self._theme, text_var, 9).pack(side="right", padx=(8, 0))
+        input_entry(row, self._theme, text_var, 9, lambda _entry: self._sync_item_from_text(item)).pack(
+            side="right",
+            padx=(8, 0),
+        )
 
     def _sync_item_from_slider(self, item: VideoItem) -> None:
         if item.syncing:
@@ -137,6 +209,36 @@ class RangeControls(tk.Frame):
         finally:
             item.syncing = False
         self._on_change()
+
+
+def clamp_fps_text(value: str, maximum: float, fallback: str) -> str:
+    text = value.strip()
+    if not text:
+        return fallback
+    try:
+        fps = float(text)
+    except ValueError:
+        return fallback
+    if fps <= 0:
+        return fallback
+    fps = min(fps, maximum)
+    if abs(fps - round(fps)) < 0.001:
+        return str(int(round(fps)))
+    return ("%.3f" % fps).rstrip("0").rstrip(".")
+
+
+def clamp_step_text(value: str, fallback: str) -> str:
+    text = value.strip()
+    if not text:
+        return fallback
+    try:
+        parsed = float(text)
+    except ValueError:
+        return fallback
+    rounded = int(round(parsed))
+    if rounded <= 0:
+        return fallback
+    return str(rounded)
 
 
 def _format_timecode(seconds: float) -> str:

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from tkinter import ttk
 
 from theme import FONT_FAMILY, Theme
+from ui_theme_apply import bind_button_theme
 
 
 class ScrollableFrame(tk.Frame):
@@ -13,6 +14,9 @@ class ScrollableFrame(tk.Frame):
         self._theme = theme
         self._autohide = autohide
         self._scrollbar_visible = False
+        self._sync_after_id: str | None = None
+        self._resize_after_id: str | None = None
+        self._theme_role = "scrollable_frame"
         self.canvas = tk.Canvas(self, bg=theme.panel, highlightthickness=0, bd=0, height=height)
         self.content = tk.Frame(self.canvas, bg=theme.panel)
         self.scrollbar = tk.Canvas(self, width=10, bg=theme.panel, bd=0, highlightthickness=0, cursor="hand2")
@@ -30,17 +34,48 @@ class ScrollableFrame(tk.Frame):
         self.scrollbar.bind("<B1-Motion>", self._jump_scroll)
 
     def bind_mousewheel_recursive(self, widget: tk.Widget) -> None:
-        widget.bind("<MouseWheel>", self._on_mousewheel, add="+")
+        if not getattr(widget, "_scroll_mousewheel_bound", False):
+            widget.bind("<MouseWheel>", self._on_mousewheel, add="+")
+            widget._scroll_mousewheel_bound = True
         for child in widget.winfo_children():
             self.bind_mousewheel_recursive(child)
 
+    def refresh_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        self.configure(bg=theme.panel)
+        self.canvas.configure(bg=theme.panel)
+        self.content.configure(bg=theme.panel)
+        self.scrollbar.configure(bg=theme.panel)
+        self._draw_scrollbar(*self.canvas.yview())
+
     def _update_scroll_region(self, _event: tk.Event) -> None:
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        self.bind_mousewheel_recursive(self.content)
-        self._sync_scrollbar()
+        self._schedule_sync()
 
     def _fit_content_width(self, event: tk.Event) -> None:
         self.canvas.itemconfigure(self.window_id, width=event.width)
+        self._schedule_resize_sync()
+
+    def _schedule_resize_sync(self) -> None:
+        if self._resize_after_id:
+            try:
+                self.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+        self._resize_after_id = self.after(90, self._run_resize_sync)
+
+    def _run_resize_sync(self) -> None:
+        self._resize_after_id = None
+        self._schedule_sync()
+
+    def _schedule_sync(self) -> None:
+        if self._sync_after_id:
+            return
+        self._sync_after_id = self.after_idle(self._sync_layout)
+
+    def _sync_layout(self) -> None:
+        self._sync_after_id = None
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.bind_mousewheel_recursive(self.content)
         self._sync_scrollbar()
 
     def _on_mousewheel(self, event: tk.Event) -> str | None:
@@ -84,6 +119,21 @@ class ScrollableFrame(tk.Frame):
         first, last = self.canvas.yview()
         return last - first < 0.999
 
+    def destroy(self) -> None:
+        if self._sync_after_id:
+            try:
+                self.after_cancel(self._sync_after_id)
+            except tk.TclError:
+                pass
+            self._sync_after_id = None
+        if self._resize_after_id:
+            try:
+                self.after_cancel(self._resize_after_id)
+            except tk.TclError:
+                pass
+            self._resize_after_id = None
+        super().destroy()
+
 
 class SegmentedControl(tk.Frame):
     def __init__(
@@ -96,6 +146,7 @@ class SegmentedControl(tk.Frame):
     ) -> None:
         super().__init__(master, bg=theme.input_bg, highlightthickness=1, highlightbackground=theme.border)
         self._theme = theme
+        self._theme_role = "segmented_control"
         self._variable = variable
         self._values = values
         self._command = command
@@ -120,6 +171,7 @@ class SegmentedControl(tk.Frame):
 
     def _select(self, value: str) -> None:
         self._variable.set(value)
+        self.refresh(self._theme)
         self._command()
 
     def refresh(self, theme: Theme) -> None:
@@ -131,6 +183,9 @@ class SegmentedControl(tk.Frame):
                 bg=theme.accent if selected else theme.input_bg,
                 fg=theme.button_text if selected else theme.text_muted,
             )
+
+    def refresh_theme(self, theme: Theme) -> None:
+        self.refresh(theme)
 
     def _hover(self, label: tk.Label, active: bool) -> None:
         if label.cget("text") == self._variable.get():
@@ -151,13 +206,16 @@ class TimeSlider(tk.Canvas):
     ) -> None:
         super().__init__(master, height=28, bg=bg or theme.panel, bd=0, highlightthickness=0, cursor="hand2")
         self._theme = theme
+        self._theme_role = "time_slider"
+        self._bg_token = "panel_alt" if bg == theme.panel_alt else "panel"
         self._variable = variable
         self._from = from_
         self._to = max(from_ + 0.1, to)
         self._command = command
         self._enabled = True
-        self._trace_id = variable.trace_add("write", lambda *_args: self._draw())
-        self.bind("<Configure>", lambda _event: self._draw())
+        self._draw_after_id: str | None = None
+        self._trace_id = variable.trace_add("write", lambda *_args: self._schedule_draw())
+        self.bind("<Configure>", lambda _event: self._schedule_draw())
         self.bind("<Button-1>", self._set_from_event)
         self.bind("<B1-Motion>", self._set_from_event)
         self._draw()
@@ -167,12 +225,29 @@ class TimeSlider(tk.Canvas):
         self.configure(cursor="hand2" if enabled else "arrow")
         self._draw()
 
+    def refresh_theme(self, theme: Theme) -> None:
+        self._theme = theme
+        bg = theme.panel_alt if self._bg_token == "panel_alt" else theme.panel
+        self.configure(bg=bg)
+        self._draw()
+
     def destroy(self) -> None:
+        if self._draw_after_id:
+            try:
+                self.after_cancel(self._draw_after_id)
+            except tk.TclError:
+                pass
+            self._draw_after_id = None
         try:
             self._variable.trace_remove("write", self._trace_id)
         except tk.TclError:
             pass
         super().destroy()
+
+    def _schedule_draw(self) -> None:
+        if self._draw_after_id:
+            return
+        self._draw_after_id = self.after_idle(self._draw)
 
     def _set_from_event(self, event: tk.Event) -> None:
         if not self._enabled:
@@ -184,6 +259,7 @@ class TimeSlider(tk.Canvas):
         self._command()
 
     def _draw(self) -> None:
+        self._draw_after_id = None
         self.delete("all")
         width = max(1, self.winfo_width())
         center_y = 14
@@ -219,9 +295,9 @@ def button(
     command: Callable[[], None],
     primary: bool = False,
 ) -> tk.Button:
-    bg = theme.accent if primary else theme.input_bg
+    bg = theme.accent if primary else theme.button_bg
     fg = theme.button_text if primary else theme.text
-    active_bg = theme.accent_hover if primary else theme.panel_alt
+    active_bg = theme.accent_hover if primary else theme.button_hover
     widget = tk.Button(
         master,
         text=text,
@@ -229,7 +305,7 @@ def button(
         font=(FONT_FAMILY, 10, "bold" if primary else "normal"),
         bg=bg,
         fg=fg,
-        activebackground=theme.accent_hover if primary else theme.panel_alt,
+        activebackground=theme.accent_hover if primary else theme.button_pressed,
         activeforeground=theme.button_text if primary else theme.text,
         relief="flat",
         bd=0,
@@ -239,11 +315,29 @@ def button(
     )
     widget.bind("<Enter>", lambda _event: widget.configure(bg=active_bg))
     widget.bind("<Leave>", lambda _event: widget.configure(bg=bg))
+    bind_button_theme(widget, theme, primary)
     return widget
 
 
-def input_entry(master: tk.Misc, theme: Theme, textvariable: tk.StringVar, width: int = 10) -> tk.Entry:
-    return tk.Entry(
+def remember_entry_value(entry: tk.Entry) -> None:
+    entry._last_valid_text = entry.get()
+
+
+def entry_last_valid(entry: tk.Entry, fallback: str) -> str:
+    value = getattr(entry, "_last_valid_text", fallback)
+    if isinstance(value, str) and value:
+        return value
+    return fallback
+
+
+def input_entry(
+    master: tk.Misc,
+    theme: Theme,
+    textvariable: tk.StringVar,
+    width: int = 10,
+    on_commit: Callable[[tk.Entry], None] | None = None,
+) -> tk.Entry:
+    entry = tk.Entry(
         master,
         textvariable=textvariable,
         width=width,
@@ -258,3 +352,27 @@ def input_entry(master: tk.Misc, theme: Theme, textvariable: tk.StringVar, width
         highlightbackground=theme.border,
         highlightcolor=theme.border_active,
     )
+    entry._last_valid_text = textvariable.get()
+
+    def commit_value() -> None:
+        if on_commit:
+            on_commit(entry)
+        remember_entry_value(entry)
+
+    def commit() -> str:
+        commit_value()
+        entry.selection_clear()
+        entry.master.focus_set()
+        return "break"
+
+    def cancel() -> str:
+        textvariable.set(getattr(entry, "_last_valid_text", textvariable.get()))
+        entry.selection_clear()
+        entry.master.focus_set()
+        return "break"
+
+    entry.bind("<Return>", lambda _event: commit())
+    entry.bind("<Escape>", lambda _event: cancel())
+    if on_commit:
+        entry.bind("<FocusOut>", lambda _event: commit_value())
+    return entry

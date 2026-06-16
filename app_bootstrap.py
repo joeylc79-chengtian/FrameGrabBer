@@ -4,41 +4,39 @@ import os
 import site
 import sys
 import tkinter as tk
+from types import MethodType
 
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-
-    HAS_DND = True
-except ImportError:
-    DND_FILES = ""
-    HAS_DND = False
-
-try:
-    import imageio_ffmpeg
-
-    HAS_IMAGEIO_FFMPEG = True
-except ImportError:
-    HAS_IMAGEIO_FFMPEG = False
+DND_FILES = "DND_Files"
 
 
-if HAS_DND:
-
-    class BaseTk(TkinterDnD.Tk):
-        def __init__(self) -> None:
-            try:
-                super().__init__()
-                self.dnd_available = True
-            except RuntimeError:
-                tk.Tk.__init__(self)
-                self.dnd_available = False
+class BaseTk(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dnd_available = False
 
 
-else:
-
-    class BaseTk(tk.Tk):
-        def __init__(self) -> None:
-            super().__init__()
-            self.dnd_available = False
+def enable_drag_and_drop(window: tk.Tk) -> bool:
+    try:
+        from tkinterdnd2 import TkinterDnD
+    except ImportError:
+        return False
+    try:
+        TkinterDnD.require(window)
+    except RuntimeError:
+        return False
+    window._subst_format_dnd = TkinterDnD.DnDWrapper._subst_format_dnd
+    window._subst_format_str_dnd = TkinterDnD.DnDWrapper._subst_format_str_dnd
+    for name in (
+        "_substitute_dnd",
+        "_dnd_bind",
+        "dnd_bind",
+        "drop_target_register",
+        "drop_target_unregister",
+    ):
+        if not hasattr(window, name):
+            setattr(window, name, MethodType(getattr(TkinterDnD.DnDWrapper, name), window))
+    window.dnd_available = True
+    return True
 
 
 def resolve_icon_path() -> str | None:
@@ -55,8 +53,44 @@ def resolve_icon_path() -> str | None:
     return None
 
 
+def apply_window_icon(window: tk.Tk) -> None:
+    icon_path = resolve_icon_path()
+    if not icon_path:
+        return
+    try:
+        window.iconbitmap(icon_path)
+    except tk.TclError:
+        pass
+
+
+def pause_redraw(window: tk.Tk) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.SendMessageW(int(window.winfo_id()), 0x000B, 0, 0)
+    except (OSError, tk.TclError, ValueError):
+        return
+
+
+def resume_redraw(window: tk.Tk) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd = int(window.winfo_id())
+        ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 1, 0)
+        ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0080 | 0x0100)
+    except (OSError, tk.TclError, ValueError):
+        return
+
+
 def get_ffmpeg_exe() -> str | None:
-    if not HAS_IMAGEIO_FFMPEG:
+    try:
+        import imageio_ffmpeg
+    except ImportError:
         return None
 
     try:

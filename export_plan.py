@@ -196,9 +196,10 @@ def _build_image_command(
     image_format: str,
     output_pattern: str,
 ) -> list[str]:
-    command = [ffmpeg_exe, "-y"]
+    command = [ffmpeg_exe, "-y", "-nostdin"]
     command += list(plan.input_args)
     command += ["-i", video_path]
+    command += ["-an"]
     if plan.vf_filters:
         filters = ",".join(plan.vf_filters)
         command += ["-vf", filters]
@@ -223,6 +224,7 @@ def _build_preview_command(
     return [
         ffmpeg_exe,
         "-y",
+        "-nostdin",
         "-framerate",
         frame_rate,
         "-i",

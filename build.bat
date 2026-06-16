@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title 视频逐帧抽图工具 v0.8 - 打包
+title 视频逐帧抽图工具 v0.9 - 打包
 
 echo ============================================
-echo   视频逐帧抽图工具 v0.8 - PyInstaller 打包
+echo   视频逐帧抽图工具 v0.9 - PyInstaller 打包
 echo ============================================
 echo.
 
@@ -30,11 +30,25 @@ echo [2/4] 获取 FFmpeg 二进制路径...
 for /f "delims=" %%i in ('"%PYTHON%" -c "import imageio_ffmpeg; import os; print(os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe()))"') do set FFMPEG_BIN_DIR=%%i
 echo       FFmpeg 目录: %FFMPEG_BIN_DIR%
 
-echo [3/4] 开始打包 exe，可能需要几分钟...
+echo.
+echo 请选择打包方式:
+echo   1. 单文件版 exe（方便分享，但启动会慢一些）
+echo   2. 文件夹版 exe（推荐测试/自用，启动更快，但需要保留整个 dist 文件夹）
+set /p BUILD_MODE=请输入 1 或 2，直接回车默认 2:
+if "%BUILD_MODE%"=="" set BUILD_MODE=2
+if "%BUILD_MODE%"=="1" (
+    set PACK_MODE=--onefile
+    set OUTPUT_NOTE=exe 位置: %~dp0dist\视频逐帧抽图工具v0.9.exe
+) else (
+    set PACK_MODE=--onedir
+    set OUTPUT_NOTE=exe 位置: %~dp0dist\视频逐帧抽图工具v0.9\视频逐帧抽图工具v0.9.exe
+)
+
+echo [3/4] 开始打包，可能需要几分钟...
 "%PYTHON%" -m PyInstaller ^
-    --onefile ^
+    %PACK_MODE% ^
     --windowed ^
-    --name "视频逐帧抽图工具v0.8" ^
+    --name "视频逐帧抽图工具v0.9" ^
     --icon=app.ico ^
     --add-data "app.ico;." ^
     --collect-binaries imageio_ffmpeg ^
@@ -55,11 +69,12 @@ echo.
 echo [4/4] 打包完成
 echo ============================================
 echo.
-echo exe 位置: %~dp0dist\视频逐帧抽图工具v0.8.exe
+echo %OUTPUT_NOTE%
 echo.
 echo 说明:
 echo   - FFmpeg 已内置在 exe 中，无需安装外部 FFmpeg
 echo   - 支持拖拽视频文件到窗口
 echo   - 完全离线可用
+echo   - 如果你更在意打开速度，优先使用文件夹版
 echo.
 pause

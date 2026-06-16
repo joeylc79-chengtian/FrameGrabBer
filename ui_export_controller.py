@@ -59,8 +59,12 @@ def selected_output_root(settings: ExportSettingsState) -> str | None:
 def options_for_item(item: VideoItem, items: list[VideoItem], settings: ExportSettingsState) -> ExportOptions:
     custom_step = _parse_positive_int(settings.custom_step.get(), "每几帧抽一帧必须是整数")
     target_fps = _parse_positive_float(settings.target_fps.get(), "指定帧率必须是数字")
+    if settings.use_target_fps.get() and not settings.use_per_video_fps.get() and target_fps > item.info.fps + 0.001:
+        raise ExportPlanError(f"{item.info.name} 的指定帧率不能高于原视频帧率 {item.info.fps:.2f} fps")
     if settings.use_target_fps.get() and settings.use_per_video_fps.get() and len(items) > 1:
         target_fps = _parse_positive_float(item.target_fps.get(), f"{item.info.name} 的指定帧率必须是数字")
+        if target_fps > item.info.fps + 0.001:
+            raise ExportPlanError(f"{item.info.name} 的指定帧率不能高于原视频帧率 {item.info.fps:.2f} fps")
     use_range = bool(item.use_range.get()) if len(items) > 1 else bool(settings.use_time_range.get())
     start_seconds = parse_timecode(item.start_text.get()) if use_range else 0.0
     end_text = item.end_text.get().strip()

@@ -14,6 +14,8 @@ class VideoItem:
         "start_text",
         "syncing",
         "target_fps",
+        "thumbnail_path",
+        "thumbnail_status",
         "use_range",
     )
 
@@ -34,6 +36,8 @@ class VideoItem:
         self.start_text = start_text
         self.end_text = end_text
         self.target_fps = target_fps
+        self.thumbnail_path = ""
+        self.thumbnail_status = "pending"
         self.syncing = False
 
 
